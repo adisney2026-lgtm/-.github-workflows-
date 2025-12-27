@@ -1,5 +1,6 @@
 name: Windows - RDP Connection
 
+
 on:
   workflow_dispatch:
 
@@ -8,7 +9,6 @@ jobs:
     name: Start Building & Connect RDP
     runs-on: windows-latest
     timeout-minutes: 999999
-
 
     env:
       RDP_IP: ${{ secrets.RDP_IP }}
@@ -19,48 +19,82 @@ jobs:
     steps:
       - name: Download & Install Essentials
         run: |
-          # Получаем прямую ссылку через API Яндекс Диска
+          # 1. Получаем прямую ссылку через API Яндекс Диска
           $apiUrl = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=https%3A%2F%2Fdisk.yandex.ru%2Fd%2FEwX3oB4aaL00SA"
-          $response = Invoke-RestMethod -Uri $apiUrl -Method Get
-          $downloadUrl = $response.href
-
-          Invoke-WebRequest -Uri $downloadUrl -OutFile "Downloads.bat"
-
-
-          # Проверяем, что файл корректный
-          $content = Get-Content -Path "Downloads.bat" -Raw
-          if (-not $content.Contains("@echo off")) {
-              Write-Error "Invalid BAT file downloaded!"
-              exit 1
+          try {
+            $response = Invoke-RestMethod -Uri $apiUrl -Method Get -UseBasicParsing
+            $downloadUrl = $response.href
+          }
+          catch {
+            Write-Error "Failed to get download link from Yandex API: $_"
+            exit 1
           }
 
+          # 2. Скачиваем файл
+          try {
+            Invoke-WebRequest -Uri $downloadUrl -OutFile "Downloads.bat" -UseBasicParsing
+          }
+          catch {
+            Write-Error "Download failed: $_"
+            exit 1
+          }
+
+          # 3. Проверяем содержимое файла
+          if (!(Test-Path "Downloads.bat")) {
+            Write-Error "File Downloads.bat not found after download!"
+            exit 1
+          }
+
+          $content = Get-Content -Path "Downloads.bat" -Raw
+          if (-not $content.Contains("@echo off")) {
+            Write-Error "Downloaded file is not a valid BAT script!"
+            exit 1
+          }
+
+          # 4. Выполняем скрипт
           cmd /c Downloads.bat
 
 
       - name: Prepare RDP Configuration
         run: |
           $RDP_FILE = "$env:TEMP\auto_rdp.rdp"
+
+
+          # Создаем RDP-файл
           @"full address:s:$env:RDP_IP`n! | Out-File -FilePath $RDP_FILE -Encoding ASCII
           @"username:s:$env:RDP_USER`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
           @"negotiate authentication:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
           @"autoconnect:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
           @"prompt for credentials:i:0`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
 
+          @"compression:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"redirectprinters:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
 
+
+          # Сохраняем учетные данные
           cmdkey /generic:$env:RDP_IP /user:$env:RDP_USER /pass:$env:RDP_PASS
 
 
+          # Включаем RDP
           reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+          reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f
+
+
+          # Настраиваем брандмауэр
           netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
 
 
+          # Запускаем RDP-подключение
           start "" mstsc.exe "$RDP_FILE"
 
 
       - name: Keep Session Alive
-        run: timeout /t 3600
+        run: timeout /t 7200  # 2 часа вместо 1 часа
 
 
       - name: Cleanup
         if: always()
-        run: Remove-Item -Path "$env:TEMP\auto_rdp.rdp" -ErrorAction SilentlyContinue
+        run: |
+          Remove-Item -Path "$env:TEMP\auto_rdp.rdp" -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "Downloads.bat" -Force -ErrorAction SilentlyContinue
+          echo Cleanup completed.
