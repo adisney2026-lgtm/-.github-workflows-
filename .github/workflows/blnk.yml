@@ -1,20 +1,66 @@
-name: Windows - RustDesk
+name: Windows - RDP Connection
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Start Building...
+    name: Start Building & Connect RDP
     runs-on: windows-latest
     timeout-minutes: 999999
 
+    # Переменные (храните в Secrets GitHub для безопасности)
+    env:
+      RDP_IP: ${{ secrets.RDP_IP }}
+      RDP_USER: ${{ secrets.RDP_USER }}
+      RDP_PASS: ${{ secrets.RDP_PASS }}
+
     steps:
-      - name: Downloading & Installing Essentials
+      - name: Download & Install Essentials
         run: |
-          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fi/qdyd4p9t6xoabl95n5o3g/Downloads.bat?rlkey=snr74vv1vr8k5suujugvrhjtm&dl=1" -OutFile "Downloads.bat"
+          # Скачиваем Downloads.bat с Яндекс Диска
+          Invoke-WebRequest -Uri "https://disk.yandex.ru/d/EwX3oB4aaL00SA?dl=1" -OutFile "Downloads.bat"
           cmd /c Downloads.bat
 
-      - name: Connect to RDP
+      - name: Prepare RDP Configuration
         run: |
-          
+          # Создаём .rdp-файл с настройками
+          $RDP_FILE = "$env:TEMP\auto_rdp.rdp"
+          @"full address:s:$env:RDP_IP`n! | Out-File -FilePath $RDP_FILE -Encoding ASCII
+          @"username:s:$env:RDP_USER`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"negotiate authentication:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"autoconnect:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"compression:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"keyboardhook:i:2`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"audiocapturemode:i:0`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"redirectprinters:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"displayconnectionbar:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"allow font smoothing:i:1`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+          @"prompt for credentials:i:0`n! | Out-File -FilePath $RDP_FILE -Append -Encoding ASCII
+
+
+          # Сохраняем учётные данные в системе
+          cmdkey /generic:$env:RDP_IP /user:$env:RDP_USER /pass:$env:RDP_PASS
+
+
+          # Включаем RDP и настраиваем брандмауэр
+          reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+          reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f
+          netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
+
+
+          # Запускаем RDP-подключение
+          start "" mstsc.exe "$RDP_FILE"
+
+
+      - name: Keep Session Alive
+        run: |
+          echo RDP session started. Keeping alive...
+          timeout /t 3600  # Ждёт 1 час (можно изменить или убрать)
+
+
+      - name: Cleanup
+        if: always()
+        run: |
+          del "$env:TEMP\auto_rdp.rdp" 2>nul
+          echo Cleanup completed.
